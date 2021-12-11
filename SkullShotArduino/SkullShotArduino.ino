@@ -1,12 +1,15 @@
 #include <Adafruit_NeoPixel.h>
 #include <Servo.h>
 
+#define OFF                   -1
+
 #define SERIAL_BAUD_RATE      115200
 #define PIN_LED               6
 #define PIN_BUTTON            7
 #define PIN_SERVO_RIGHT       9
 #define PIN_SERVO_LEFT        10
 #define PIN_PUMP_FORWARD      16
+#define PIN_PUMP_REVERSE      17
 
 #define LED_COUNT             31
 
@@ -47,20 +50,26 @@
 #define LED_EYE_LEFT          5
 #define LED_EYE_RIGHT         13
 
-#define SERVO_LEFT_OPEN       60
+#define SERVO_LEFT_OPEN       50
 #define SERVO_LEFT_CLOSED     165
 #define SERVO_RIGHT_OPEN      75
 #define SERVO_RIGHT_CLOSED    0
 
-#define PUMP_STOPPED          0
-#define PUMP_FORWARD          1
-#define PUMP_REVERSE          2
+#define PUMP_STOP          0
+#define PUMP_FORE          1
+#define PUMP_REVERSE       2
 
 #define BUTTON_DEBOUNCE_DELAY 50
 
-char pumpMode = PUMP_STOPPED;
+#define MODE_IDLE          0
+#define MODE_PUMP_START    1
+#define MODE_PUMP_RUN      2
+#define MODE_PUMP_STOP     3
+
+char pumpMode = PUMP_STOP;
 bool buttonState = false;
 bool lastButtonState = false;
+bool buttonReleased = true;
 unsigned long buttonLastDebounceTime = 0;
 
 Adafruit_NeoPixel leds(LED_COUNT, PIN_LED, NEO_GRB + NEO_KHZ800);
@@ -68,71 +77,35 @@ Servo servoLeft;
 Servo servoRight;
 
 struct AnimationStep {
+  char pump;
   float jaw;
   uint32_t eyeColor;
+  uint32_t headTop;
+  uint32_t headMid;
+  uint32_t headLow;
 };
 
-AnimationStep redEyesFlicker[] = {
-  { jaw: 0.0, eyeColor: leds.Color(255, 0, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 20, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 40, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 60, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 40, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 20, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 0, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 20, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 40, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 60, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 40, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 20, 0) },
-  { jaw: 0.0, eyeColor: leds.Color(255, 0, 0) },
-};
-
-AnimationStep jawOpen[] = {
-  { jaw: 0.0,  eyeColor: -1 },
-  { jaw: 0.05, eyeColor: -1 },
-  { jaw: 0.1 , eyeColor: -1 },
-  { jaw: 0.15, eyeColor: -1 },
-  { jaw: 0.2,  eyeColor: -1 },
-  { jaw: 0.25, eyeColor: -1 },
-  { jaw: 0.3,  eyeColor: -1 },
-  { jaw: 0.35, eyeColor: -1 },
-  { jaw: 0.4,  eyeColor: -1 },
-  { jaw: 0.45, eyeColor: -1 },
-  { jaw: 0.5,  eyeColor: -1 },
-  { jaw: 0.55, eyeColor: -1 },
-  { jaw: 0.6,  eyeColor: -1 },
-  { jaw: 0.65, eyeColor: -1 },
-  { jaw: 0.7,  eyeColor: -1 },
-  { jaw: 0.75, eyeColor: -1 },
-  { jaw: 0.8,  eyeColor: -1 },
-  { jaw: 0.85, eyeColor: -1 },
-  { jaw: 0.9,  eyeColor: -1 },
-  { jaw: 0.95, eyeColor: -1 },
-  { jaw: 1.0,  eyeColor: -1 },
-};
-
-AnimationStep jawSnapShut[] = {
-  { jaw: 1.0, eyeColor: -1 },
-  { jaw: 0.8, eyeColor: -1 },
-  { jaw: 0.6, eyeColor: -1 },
-  { jaw: 0.4, eyeColor: -1 },
-  { jaw: 0.2, eyeColor: -1 },
-  { jaw: 0.0, eyeColor: -1 },
-  { jaw: 0.0, eyeColor: -1 },
-  { jaw: 0.0, eyeColor: -1 },
-  { jaw: 0.0, eyeColor: -1 },
-  { jaw: 0.0, eyeColor: -1 },
-};
+uint32_t black = leds.Color(0, 0, 0);
+uint32_t red = leds.Color(255, 0, 0);
+uint32_t blackRed1 = leds.Color(50, 0, 0);
+uint32_t blackRed2 = leds.Color(100, 0, 0);
+uint32_t blackRed3 = leds.Color(150, 0, 0);
+uint32_t blackRed4 = leds.Color(200, 0, 0);
+uint32_t blackRed5 = leds.Color(255, 0, 0);
+uint32_t redOrange1 = leds.Color(255, 50, 0);
+uint32_t redOrange2 = leds.Color(255, 100, 0);
+uint32_t redOrange3 = leds.Color(255, 175, 0);
+uint32_t white = leds.Color(255, 255, 255);
 
 // the setup function runs once when you press reset or power the board
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
 
   pinMode(PIN_PUMP_FORWARD, OUTPUT);
+  pinMode(PIN_PUMP_REVERSE, OUTPUT);
   pinMode(PIN_BUTTON, INPUT_PULLUP);
 
-  setPump(PUMP_STOPPED);
+  setPump(PUMP_STOP);
 
   if (Serial) {
     Serial.println("----- SkullShot -----");
@@ -141,35 +114,224 @@ void setup() {
   leds.begin();
   leds.show();
   leds.setBrightness(100);
-  //ledsFillColor(leds.Color(255, 255, 255));
 }
 
 // the loop function runs over and over again forever
 void loop() {
-  //updateButton(digitalRead(PIN_BUTTON) == LOW);
-  //setPump(PUMP_FORWARD);
+  bool interrupted = false;
 
-  ledsEyeColor(leds.Color(255, 0, 0));
-  delay(15000);
+  // Wait until the button is no longer held.
+  while (buttonState) {
+    updateButton(digitalRead(PIN_BUTTON) == LOW);
+  }
+
+  interrupted = idle();
+  if (!interrupted) {
+    return;
+  }
+
+  Serial.println("PUMP START");
+  interrupted = pumpStart();
+  if (interrupted) {
+    Serial.println("Pump start interrupted");
+    pumpStop();
+    return;
+  }
+
+  Serial.println("PUMP RUN");
+  interrupted = pumpRun();
+  if (interrupted) {
+    Serial.println("Pump run interrupted");
+    pumpStop();
+    return;
+  }
+
+  Serial.println("Pump run complete");
+  Serial.println("PUMP STOP");
+  pumpStop();
+}
+
+bool idle() {
+  Serial.println("IDLE");
+
+  AnimationStep redEyes[] = {
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: red,        headTop: white, headMid: white, headLow: white },
+  };
+
+  AnimationStep redEyesFlicker[] = {
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: red,        headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: redOrange1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: redOrange2, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: redOrange3, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: redOrange2, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: redOrange1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: red,        headTop: white, headMid: white, headLow: white },
+  };
+
+  animate(redEyes, sizeof(redEyes) / sizeof(redEyes[0]), 5000, false);
   animate(redEyesFlicker, sizeof(redEyesFlicker) / sizeof(redEyesFlicker[0]), 50, false);
+  return buttonState;
+}
 
-  //delay(5000);
-  //animate(jawOpen, sizeof(jawOpen) / sizeof(jawOpen[0]), 50);
-  //delay(5000);
-  //animate(jawSnapShut, sizeof(jawSnapShut) / sizeof(jawSnapShut[0]), 50);
+bool pumpStart() {
+  AnimationStep jawOpen[] = {
+    { pump: PUMP_STOP, jaw: 0.0,  eyeColor: blackRed1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.1,  eyeColor: blackRed1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.2 , eyeColor: blackRed1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.3,  eyeColor: blackRed1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.4,  eyeColor: blackRed1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.45, eyeColor: blackRed1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.5,  eyeColor: blackRed2, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.55, eyeColor: blackRed2, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.6,  eyeColor: blackRed2, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.65, eyeColor: blackRed2, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.7,  eyeColor: blackRed3, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.75, eyeColor: blackRed3, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.8,  eyeColor: blackRed4, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.85, eyeColor: blackRed4, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.9,  eyeColor: blackRed5, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.95, eyeColor: blackRed5, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+  };
+
+  return animate(jawOpen, sizeof(jawOpen) / sizeof(jawOpen[0]), 50, true);
+}
+
+bool pumpRun() {
+  // 1.5 oz shot takes 6 seconds, so run this 6 times.
+  AnimationStep pumpRun1Second[] = {
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed5, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed5, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed4, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed4, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed3, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed3, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed4, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed4, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed5, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_FORE, jaw: 1.0,  eyeColor: blackRed5, headTop: white, headMid: white, headLow: white },
+  };
+
+  for (int second = 0; second < 6; second++) {
+    if (animate(pumpRun1Second, sizeof(pumpRun1Second) / sizeof(pumpRun1Second[0]), 50, true)) {
+      // We got interrupted. Return immediately.
+      return true;
+    }
+  }
+  return false;
+}
+
+void pumpStop() {
+  AnimationStep pumpFinish[] = {
+    // Reverse for 1 second
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_REVERSE, jaw: 1.0,  eyeColor: red, headTop: white, headMid: white, headLow: white },
+  };
+
+  AnimationStep jawSnapShut[] = {
+    { pump: PUMP_STOP, jaw: 1.0, eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.8, eyeColor: red,       headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.6, eyeColor: blackRed5, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.4, eyeColor: blackRed5, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.2, eyeColor: blackRed4, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: blackRed4, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: blackRed3, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: blackRed2, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: blackRed1, headTop: white, headMid: white, headLow: white },
+    { pump: PUMP_STOP, jaw: 0.0, eyeColor: blackRed1, headTop: white, headMid: white, headLow: white },
+  };
+
+  animate(pumpFinish, sizeof(pumpFinish) / sizeof(pumpFinish[0]), 50, true);
+  animate(jawSnapShut, sizeof(jawSnapShut) / sizeof(jawSnapShut[0]), 50, true);
+}
+
+bool animate(AnimationStep* steps, int length, int stepDelay, bool useJaw) {
+  Serial.println("animate");
+  if (useJaw) {
+    servoLeft.attach(PIN_SERVO_LEFT);
+    servoRight.attach(PIN_SERVO_RIGHT);
+  }
+
+  for (int stepIndex = 0; stepIndex < length; stepIndex++) {
+    Serial.print(".");
+    AnimationStep& step = steps[stepIndex];
+
+    if (updateButton(digitalRead(PIN_BUTTON) == LOW)) {
+      Serial.println();
+      Serial.println("Button changed:" + buttonState);
+      // The mode changed
+      if (useJaw) {
+        servoLeft.detach();
+        servoRight.detach();
+      }
+      return true;
+    }
+
+    if (useJaw) {
+      setJawPosition(step.jaw);
+    }
+
+    setPump(step.pump);
+
+    ledsEyeColor(step.eyeColor);
+    ledsHeadTop(step.headTop);
+    ledsHeadMid(step.headMid);
+    ledsHeadLow(step.headLow);
+    ledsJaw(step.headLow);
+    leds.show();
+
+    delay(stepDelay);
+  }
+  Serial.println();
+
+  if (useJaw) {
+    servoLeft.detach();
+    servoRight.detach();
+  }
+  return false;
 }
 
 void setPump(char mode) {
   if (pumpMode != mode) {
-    pumpMode = mode;
-    digitalWrite(PIN_PUMP_FORWARD, mode == PUMP_FORWARD ? HIGH : LOW);
+    Serial.print("PUMP:");
+    Serial.println(mode == PUMP_FORE ? "FORE" : (mode == PUMP_REVERSE ? "REVERSE" : "STOP"));
 
-    Serial.print("PUMP: ");
-    Serial.println(mode == PUMP_FORWARD ? "FORWARD" : mode == PUMP_REVERSE ? "REVERSE" : "STOPPED");
+    pumpMode = mode;
+    digitalWrite(PIN_PUMP_FORWARD, mode == PUMP_FORE ? HIGH : LOW);
+    digitalWrite(PIN_PUMP_REVERSE, mode == PUMP_REVERSE ? HIGH : LOW);
   }
 }
 
-void updateButton(boolean pressed) {
+bool updateButton(boolean pressed) {
   if (pressed != lastButtonState) {
     buttonLastDebounceTime = millis();
   }
@@ -177,44 +339,14 @@ void updateButton(boolean pressed) {
   if ((millis() - buttonLastDebounceTime) > BUTTON_DEBOUNCE_DELAY) {
     if (pressed != buttonState) {
       buttonState = pressed;
-
-      if (pressed) {
-        Serial.println("Button pressed");
-        setPump(PUMP_FORWARD);
-      } else {
-        Serial.println("Button released");
-        setPump(PUMP_STOPPED);
-      }
+      Serial.print("Button: ");
+      Serial.println(pressed);
+      return true;
     }
   }
 
   lastButtonState = pressed;
-}
-
-void animate(AnimationStep* steps, int length, int stepDelay, bool useJaw) {
-  if (useJaw) {
-    servoLeft.attach(PIN_SERVO_LEFT);
-    servoRight.attach(PIN_SERVO_RIGHT);
-  }
-
-  for (int stepIndex = 0; stepIndex < length; stepIndex++) {
-    AnimationStep& step = steps[stepIndex];
-
-    if (useJaw) {
-      setJawPosition(step.jaw);
-    }
-
-    if (step.eyeColor != -1) {
-      ledsEyeColor(step.eyeColor);
-    }
-
-    delay(stepDelay);
-  }
-
-  if (useJaw) {
-    servoLeft.detach();
-    servoRight.detach();
-  }
+  return false;
 }
 
 /**
@@ -239,5 +371,45 @@ void ledsFillColor(uint32_t color) {
 void ledsEyeColor(uint32_t color) {
   leds.setPixelColor(LED_EYE_LEFT, color);
   leds.setPixelColor(LED_EYE_RIGHT, color);
-  leds.show();
+}
+
+void ledsHeadTop(uint32_t color) {
+  leds.setPixelColor(LED_BACK_TOP, color);
+  leds.setPixelColor(LED_MID_TOP_CENTER, color);
+  leds.setPixelColor(LED_MID_TOP_LEFT, color);
+  leds.setPixelColor(LED_MID_TOP_RIGHT, color);
+  leds.setPixelColor(LED_FACE_TOP_CENTER, color);
+  leds.setPixelColor(LED_FACE_TOP_LEFT, color);
+  leds.setPixelColor(LED_FACE_TOP_RIGHT, color);
+}
+
+void ledsHeadMid(uint32_t color) {
+  leds.setPixelColor(LED_FACE_FORE_LEFT, color);
+  leds.setPixelColor(LED_FACE_FORE_RIGHT, color);
+  leds.setPixelColor(LED_BACK_MID_LEFT, color);
+  leds.setPixelColor(LED_BACK_MID_RIGHT, color);
+  leds.setPixelColor(LED_MID_MID_LEFT, color);
+  leds.setPixelColor(LED_MID_MID_RIGHT, color);
+  leds.setPixelColor(LED_FACE_MID_LEFT, color);
+  leds.setPixelColor(LED_FACE_MID_RIGHT, color);
+}
+
+void ledsHeadLow(uint32_t color) {
+  leds.setPixelColor(LED_BACK_BOT_LEFT, color);
+  leds.setPixelColor(LED_BACK_BOT_RIGHT, color);
+  leds.setPixelColor(LED_MID_BOT_LEFT, color);
+  leds.setPixelColor(LED_MID_BOT_RIGHT, color);
+  leds.setPixelColor(LED_FACE_BOT_LEFT, color);
+  leds.setPixelColor(LED_FACE_BOT_RIGHT, color);
+  leds.setPixelColor(LED_FACE_DOWN_LEFT, color);
+  leds.setPixelColor(LED_FACE_DOWN_RIGHT, color);
+}
+
+void ledsJaw(uint32_t color) {
+  leds.setPixelColor(LED_JAW_LEFT_1, color);
+  leds.setPixelColor(LED_JAW_LEFT_2, color);
+  leds.setPixelColor(LED_JAW_LEFT_3, color);
+  leds.setPixelColor(LED_JAW_RIGHT_1, color);
+  leds.setPixelColor(LED_JAW_RIGHT_2, color);
+  leds.setPixelColor(LED_JAW_RIGHT_3, color);
 }

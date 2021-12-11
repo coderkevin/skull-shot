@@ -1,6 +1,6 @@
 {
     "board": "arduino:avr:nano",
-    "port": "/dev/cu.wchusbserial144110",
+    "port": "/dev/cu.wchusbserial144220",
     "sketch": "SkullShotArduino.ino",
     "configuration": "cpu=atmega328old"
 }
